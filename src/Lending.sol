@@ -45,7 +45,6 @@ contract LendingService {
     function calcPrincipleSum(uint256 initBalance, uint256 initTimestamp) internal view returns (uint256) {
         uint nDays = (block.timestamp - initTimestamp) / 1 days;
         uint balance = initBalance;
-        uint interest = 0;
         for (uint i = 0; i < nDays; i++) {
             balance = balance * 1001 / 1000;
         }
@@ -67,21 +66,21 @@ contract LendingService {
    }
 
     function borrow(address tokenAddress, uint256 amount) public payable {
-        uint256 borrowAmount;
         require(tokenAddress == address(usdc), "borrow: tokenAddress is not USDC");
         require(amount > 0, "borrow: amount must be nonzero");
-        require(msg.value == amount, "borrow: msg.value must be equal to collateral amount");
         for (uint i = 0; i < borrowInfos.length; i++) {
             require(borrowInfos[i].borrower != msg.sender, "borrow: double borrow");
         }
+        
         BorrowInfo memory b;
         b.borrower = msg.sender;
-        b.collateralAmount = amount;
-        borrowAmount = ethToUsdc(amount) * 5 / 10;
-        b.amount = borrowAmount;
-        b.liquidationThresh = ethToUsdc(amount) * 75 / 100;
+        b.collateralAmount = usdcToEth(amount * 10 / 5);
+        require(msg.value == b.collateralAmount, "borrow: msg.value must be equal to collateral amount");
+        b.amount = amount;
+        b.liquidationThresh = usdcToEth(amount) * 75 / 100;
         b.timestamp = block.timestamp;
-        usdc.transfer(msg.sender, borrowAmount);
+        borrowInfos.push(b);
+        usdc.transfer(msg.sender, amount);
     }
 
     function repay(address tokenAddress, uint256 amount) public {
@@ -103,7 +102,7 @@ contract LendingService {
                     b.timestamp = block.timestamp;
                     b.amount = paybackAmount - amount;
                 }
-                break;
+                return;
             }
         }
         require(false, "repay: user not found");
@@ -118,7 +117,7 @@ contract LendingService {
                     borrowInfos[i] = borrowInfos[borrowInfos.length - 1];
                     borrowInfos.pop();
                 }
-                break;
+                return;
             }
         }
         require(false, "liquidate: user not found");
@@ -141,7 +140,7 @@ contract LendingService {
                     d.timestamp = block.timestamp;
                     d.amount = paybackAmount - amount;
                 }
-                break;
+                return;
             }
         }
         require(false, "withdraw: user not found");
