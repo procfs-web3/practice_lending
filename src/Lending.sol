@@ -8,13 +8,15 @@ contract LendingService {
 
     IDreamOracle priceOracle;
     IERC20 usdc;
-    DepositInfo[] depositInfos;
+    DepositInfo[] usdcDepositInfos;
+    DepositInfo[] ethDepositInfos;
     BorrowInfo[] borrowInfos;
 
     struct DepositInfo {
         address provider;
         uint256 amount;
         uint256 timestamp;
+        bool isUsdc;
     }
 
     struct BorrowInfo {
@@ -51,12 +53,10 @@ contract LendingService {
         return balance;
     }
 
-   function deposit(address tokenAddress, uint256 amount) public {
-        require(tokenAddress == address(usdc), "deposit: tokenAddress is not USDC");
-        require(amount > 0, "deposit: amount must be nonzero");
-        for (uint i = 0; i < depositInfos.length; i++) {
-            if (depositInfos[i].provider == msg.sender) {
-                DepositInfo storage d = depositInfos[i];
+    function _depositUsdc(uint256 amount) internal {
+        for (uint i = 0; i < usdcDepositInfos.length; i++) {
+            if (usdcDepositInfos[i].provider == msg.sender) {
+                DepositInfo storage d = usdcDepositInfos[i];
                 d.amount = calcPrincipleSum(amount, d.timestamp) + amount;
                 d.timestamp = block.timestamp;
                 usdc.transferFrom(msg.sender, address(this), amount);
@@ -67,21 +67,52 @@ contract LendingService {
         d.provider = msg.sender;
         d.amount = amount;
         d.timestamp = block.timestamp;
-        depositInfos.push(d);
+        usdcDepositInfos.push(d);
         usdc.transferFrom(msg.sender, address(this), amount);
+    }
+
+    function _depositEth(uint256 amount) internal {
+        for (uint i = 0; i < ethDepositInfos.length; i++) {
+            if (ethDepositInfos[i].provider == msg.sender) {
+                DepositInfo storage d = ethDepositInfos[i];
+                d.amount = calcPrincipleSum(amount, d.timestamp) + amount;
+                d.timestamp = block.timestamp;
+                return;
+            }
+        }
+        DepositInfo memory d;
+        d.provider = msg.sender;
+        d.amount = amount;
+        d.timestamp = block.timestamp;
+        ethDepositInfos.push(d);
+    }
+
+   function deposit(address tokenAddress, uint256 amount) public payable {
+        require((amount > 0 && msg.value == 0) || (amount == 0 && msg.value > 0), "deposit: amount must be nonzero and only one type of asset can be deposited");
+        if (amount == 0) {
+            _depositEth(msg.value);
+        }
+        else {
+            require(tokenAddress == address(usdc), "deposit: tokenAddress is not USDC");
+            _depositUsdc(amount);
+        }
    }
 
-    function borrow(address tokenAddress, uint256 amount) public payable {
+    function borrow(address tokenAddress, uint256 amount) public {
         require(tokenAddress == address(usdc), "borrow: tokenAddress is not USDC");
         require(amount > 0, "borrow: amount must be nonzero");
         for (uint i = 0; i < borrowInfos.length; i++) {
             require(borrowInfos[i].borrower != msg.sender, "borrow: double borrow");
         }
-        
         BorrowInfo memory b;
         b.borrower = msg.sender;
         b.collateralAmount = usdcToEth(amount * 10 / 5);
-        require(msg.value == b.collateralAmount, "borrow: msg.value must be equal to collateral amount");
+        for (uint i = 0; i < ethDepositInfos.length; i++) {
+            if (ethDepositInfos[i].provider == msg.sender) {
+                require(ethDepositInfos[i].amount >= b.collateralAmount, "borrow: not enough collateral");
+                ethDepositInfos[i].amount -= b.collateralAmount;
+            }
+        }
         b.amount = amount;
         b.liquidationThresh = usdcToEth(amount) * 75 / 100;
         b.timestamp = block.timestamp;
@@ -142,18 +173,16 @@ contract LendingService {
         require(false, "liquidate: user not found");
     }
 
-    function withdraw(address tokenAddress, uint256 amount) public {
-        require(tokenAddress == address(usdc), "withdraw: tokenAddress is not USDC");
-        require(amount > 0, "withdraw: amount must be nonzero");
-        for (uint i = 0; i < depositInfos.length; i++) {
-            DepositInfo storage d = depositInfos[i];
-            if (d.provider == msg.sender) {
+    function _withdrawUsdc(address user, uint256 amount) internal {
+        for (uint i = 0; i < usdcDepositInfos.length; i++) {
+            DepositInfo storage d = usdcDepositInfos[i];
+            if (d.provider == user) {
                 uint256 paybackAmount = calcPrincipleSum(d.amount, d.timestamp);
                 require(amount <= paybackAmount, "withdraw: excessive withdrawl");
                 usdc.transfer(d.provider, amount);
                 if (paybackAmount == amount) {
-                    depositInfos[i] = depositInfos[depositInfos.length - 1];
-                    depositInfos.pop();
+                    usdcDepositInfos[i] = usdcDepositInfos[usdcDepositInfos.length - 1];
+                    usdcDepositInfos.pop();
                 }
                 else {
                     d.timestamp = block.timestamp;
@@ -163,5 +192,38 @@ contract LendingService {
             }
         }
         require(false, "withdraw: user not found");
+    }
+
+    function _withdrawEth(address user, uint256 amount) internal {
+        for (uint i = 0; i < ethDepositInfos.length; i++) {
+            DepositInfo storage d = ethDepositInfos[i];
+            if (d.provider == user) {
+                uint256 paybackAmount = calcPrincipleSum(d.amount, d.timestamp);
+                require(amount <= paybackAmount, "withdraw: excessive withdrawl");
+                payable(d.provider).transfer(amount);
+                if (paybackAmount == amount) {
+                    ethDepositInfos[i] = ethDepositInfos[ethDepositInfos.length - 1];
+                    ethDepositInfos.pop();
+                }
+                else {
+                    d.timestamp = block.timestamp;
+                    d.amount = paybackAmount - amount;
+                }
+                return;
+            }
+        }
+        require(false, "withdraw: user not found");
+    }
+
+    function withdraw(address tokenAddress, uint256 amount) public {
+        require(amount > 0, "withdraw: amount must be nonzero");
+        if (tokenAddress == address(0)) {
+            _withdrawEth(msg.sender, amount);
+        }
+        else {
+            require(tokenAddress == address(usdc), "withdraw: token is not USDC");
+            _withdrawUsdc(msg.sender, amount);
+        }
+        
     }
 }

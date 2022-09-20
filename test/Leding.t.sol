@@ -24,10 +24,11 @@ contract LendingTest is Test {
         usdc = new USDC();
         bank = new LendingService(address(usdc), address(oracle));
         // set up initial USDC pool for bank
+        vm.deal(address(bank), 10 ether);
         usdc.transfer(address(bank), 10 ether);
     }
 
-    function testDepositBasic() public {
+    function testDepositBasic1() public {
         address actor = address(0x11);
         usdc.transfer(actor, 1 ether);
         uint256 balPrev;
@@ -44,6 +45,23 @@ contract LendingTest is Test {
         assertEq(balAfter - balPrev, 1.001 ether);
     }
 
+    function testDepositBasic2() public {
+        address actor = address(0x11);
+        vm.deal(actor, 20 ether);
+        uint256 balPrev;
+        uint256 balAfter;
+
+        vm.startPrank(actor);
+        vm.warp(0);
+        bank.deposit{value: 10 ether}(address(0), 0);
+        vm.warp(1 days);
+        balPrev = actor.balance;
+        bank.withdraw(address(0), 10.01 ether);
+        balAfter = actor.balance;
+        assertEq(balAfter - balPrev, 10.01 ether);
+    }
+
+
     function testLendBasic() public {
         address actor = address(0x11);
         usdc.transfer(actor, 10 ether);
@@ -57,7 +75,8 @@ contract LendingTest is Test {
         vm.warp(0);
         balPrev = usdc.balanceOf(actor);
         etherAmount = oracle.getPrice(address(usdc)) * 1 ether * 2;
-        bank.borrow{value: etherAmount}(address(usdc), 1 ether);
+        bank.deposit{value: etherAmount}(address(0), 0);
+        bank.borrow(address(usdc), 1 ether);
         balAfter = usdc.balanceOf(actor);
         assertEq(balPrev + 1 ether, balAfter);
         vm.warp(1 days);
@@ -91,7 +110,8 @@ contract LendingTest is Test {
         vm.warp(0);
         balPrev = usdc.balanceOf(actor1);
         etherAmount = oracle.getPrice(address(usdc)) * 1 ether * 2;
-        bank.borrow{value: etherAmount}(address(usdc), 1 ether);
+        bank.deposit{value: etherAmount}(address(0), 0);
+        bank.borrow(address(usdc), 1 ether);
         balAfter = usdc.balanceOf(actor1);
         assertEq(balPrev + 1 ether, balAfter);
         vm.warp(1 days);
@@ -123,7 +143,8 @@ contract LendingTest is Test {
         vm.warp(0);
         balPrev = usdc.balanceOf(actor1);
         etherAmount = oracle.getPrice(address(usdc)) * 1 ether * 2;
-        bank.borrow{value: etherAmount}(address(usdc), 1 ether);
+        bank.deposit{value: etherAmount}(address(0), 0);
+        bank.borrow(address(usdc), 1 ether);
         balAfter = usdc.balanceOf(actor1);
         assertEq(balPrev + 1 ether, balAfter);
         vm.warp(1 days);
@@ -174,7 +195,8 @@ contract LendingTest is Test {
         vm.warp(0);
         balPrev = usdc.balanceOf(actor1);
         etherAmount = oracle.getPrice(address(usdc)) * 1 ether * 2;
-        bank.borrow{value: etherAmount}(address(usdc), 1 ether);
+        bank.deposit{value: etherAmount}(address(0), 0);
+        bank.borrow(address(usdc), 1 ether);
         balAfter = usdc.balanceOf(actor1);
         assertEq(balPrev + 1 ether, balAfter);
         vm.warp(1 days);
@@ -200,6 +222,4 @@ contract LendingTest is Test {
         
         assertEq(liquidateUsdc1, liquidateUsdc2 * 2);
     }
-
-
 }
