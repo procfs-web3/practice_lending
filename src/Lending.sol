@@ -55,7 +55,13 @@ contract LendingService {
         require(tokenAddress == address(usdc), "deposit: tokenAddress is not USDC");
         require(amount > 0, "deposit: amount must be nonzero");
         for (uint i = 0; i < depositInfos.length; i++) {
-            require(depositInfos[i].provider != msg.sender, "deposit: double deposit");
+            if (depositInfos[i].provider == msg.sender) {
+                DepositInfo storage d = depositInfos[i];
+                d.amount = calcPrincipleSum(amount, d.timestamp) + amount;
+                d.timestamp = block.timestamp;
+                usdc.transferFrom(msg.sender, address(this), amount);
+                return;
+            }
         }
         DepositInfo memory d;
         d.provider = msg.sender;
@@ -109,13 +115,26 @@ contract LendingService {
     }
 
     function liquidate(address user, address tokenAddress, uint256 amount) public {
-        // argument amount is ignored.
         require(tokenAddress == address(usdc), "liquidate: tokenAddress is not USDC");
+        require(amount > 0, "liquidate: liquidation amount must be nonzero");
         for (uint i = 0; i < borrowInfos.length; i++) {
-            if (borrowInfos[i].borrower == user) {
-                if (_liquidate(msg.sender, borrowInfos[i].liquidationThresh, borrowInfos[i].collateralAmount)) {
-                    borrowInfos[i] = borrowInfos[borrowInfos.length - 1];
-                    borrowInfos.pop();
+            BorrowInfo storage b = borrowInfos[i];
+            if (b.borrower == user) {
+                uint usdcAmount = ethToUsdc(b.collateralAmount);
+                if (usdcAmount <= b.liquidationThresh) {
+                    require(amount <= b.collateralAmount, "liquidate: liquidation amount exceeds collateral amount");
+                    if (amount == b.collateralAmount) {
+                        payable(msg.sender).transfer(amount);
+                        usdc.transferFrom(msg.sender, address(this), usdcAmount);
+                        borrowInfos[i] = borrowInfos[borrowInfos.length - 1];
+                        borrowInfos.pop();
+                    }
+                    else {
+                        usdcAmount = usdcAmount * amount / b.collateralAmount;
+                        b.collateralAmount -= amount;
+                        payable(msg.sender).transfer(amount);
+                        usdc.transferFrom(msg.sender, address(this), usdcAmount);
+                    }
                 }
                 return;
             }
@@ -144,17 +163,5 @@ contract LendingService {
             }
         }
         require(false, "withdraw: user not found");
-    }
-
-    function _liquidate(address liquidator, uint256 liquidationThresh, uint256 collateralAmount) internal returns (bool) {
-        uint usdcAmount = ethToUsdc(collateralAmount);
-        if (usdcAmount <= liquidationThresh) {
-            payable(liquidator).transfer(collateralAmount);
-            usdc.transferFrom(liquidator, address(this), usdcAmount);
-            return true;
-        }
-        else {
-            return false;
-        }
     }
 }
