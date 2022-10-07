@@ -15,6 +15,7 @@ contract LendingService {
     struct DepositInfo {
         uint256 amount;
         uint256 timestamp;
+        uint256 timeRemainder;
     }
 
     struct BorrowInfo {
@@ -22,6 +23,7 @@ contract LendingService {
         uint256 collateralAmount;
         uint256 liquidationThresh;
         uint256 timestamp;
+        uint256 timeRemainder;
     }
 
     constructor(address usdcAddress, address oracleAddress) {
@@ -53,7 +55,8 @@ contract LendingService {
     function _depositUsdc(address provider, uint256 amount) internal {
         DepositInfo storage d = usdcDepositInfos[provider];
         if (d.amount > 0) {
-            d.amount = calcPrincipleSum(d.amount, d.timestamp) + amount;
+            d.amount = calcPrincipleSum(d.amount, d.timestamp + d.timeRemainder) + amount;
+            d.timeRemainder = (d.timestamp - block.timestamp) % 1 days;
             d.timestamp = block.timestamp;
         }
         else {
@@ -65,7 +68,8 @@ contract LendingService {
     function _depositEth(address provider, uint256 amount) internal {
         DepositInfo storage d = ethDepositInfos[provider];
         if (d.amount > 0) {
-            d.amount = calcPrincipleSum(d.amount, d.timestamp) + amount;
+            d.amount = calcPrincipleSum(d.amount, d.timestamp + d.timeRemainder) + amount;
+            d.timeRemainder = (d.timestamp - block.timestamp) % 1 days;
             d.timestamp = block.timestamp;
         }
         else {
@@ -108,7 +112,7 @@ contract LendingService {
         require(amount > 0, "repay: amount must be nonzero");
         BorrowInfo storage b = usdcBorrows[msg.sender];
         if (b.amount > 0) {
-            uint256 paybackAmount = calcPrincipleSum(b.amount, b.timestamp);
+            uint256 paybackAmount = calcPrincipleSum(b.amount, b.timestamp + b.timeRemainder);
             usdc.transferFrom(msg.sender, address(this), amount);
             if (paybackAmount >= amount) {
                 // fully return collateral
@@ -116,6 +120,7 @@ contract LendingService {
             }
             else {
                 // partially return collateral
+                b.timeRemainder = (b.timestamp - block.timestamp) % 1 days;
                 b.timestamp = block.timestamp;
                 b.amount = paybackAmount - amount;
                 payable(msg.sender).transfer(b.collateralAmount * amount / paybackAmount);
