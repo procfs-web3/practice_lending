@@ -43,8 +43,8 @@ contract LendingService {
         return usdcAmount * ethPerUsdc;
     }
 
-    function calcPrincipleSum(uint256 initBalance, uint256 initTimestamp) internal view returns (uint256) {
-        uint nDays = (block.timestamp - initTimestamp) / 1 days;
+    function calcPrincipleSum(uint256 initBalance, uint256 elapsedTime) internal view returns (uint256) {
+        uint nDays = elapsedTime / 1 days;
         uint balance = initBalance;
         for (uint i = 0; i < nDays; i++) {
             balance = balance * 1001 / 1000;
@@ -55,7 +55,7 @@ contract LendingService {
     function _depositUsdc(address provider, uint256 amount) internal {
         DepositInfo storage d = usdcDepositInfos[provider];
         if (d.amount > 0) {
-            d.amount = calcPrincipleSum(d.amount, d.timestamp + d.timeRemainder) + amount;
+            d.amount = calcPrincipleSum(d.amount, block.timestamp - d.timestamp + d.timeRemainder) + amount;
             d.timeRemainder = (block.timestamp - d.timestamp) % 1 days;
             d.timestamp = block.timestamp;
         }
@@ -69,7 +69,7 @@ contract LendingService {
     function _depositEth(address provider, uint256 amount) internal {
         DepositInfo storage d = ethDepositInfos[provider];
         if (d.amount > 0) {
-            d.amount = calcPrincipleSum(d.amount, d.timestamp + d.timeRemainder) + amount;
+            d.amount = calcPrincipleSum(d.amount, block.timestamp - d.timestamp + d.timeRemainder) + amount;
             d.timeRemainder = (block.timestamp - d.timestamp) % 1 days;
             d.timestamp = block.timestamp;
         }
@@ -114,7 +114,7 @@ contract LendingService {
         require(amount > 0, "repay: amount must be nonzero");
         BorrowInfo storage b = usdcBorrows[msg.sender];
         if (b.amount > 0) {
-            uint256 paybackAmount = calcPrincipleSum(b.amount, b.timestamp + b.timeRemainder);
+            uint256 paybackAmount = calcPrincipleSum(b.amount, block.timestamp - b.timestamp + b.timeRemainder);
             usdc.transferFrom(msg.sender, address(this), amount);
             if (paybackAmount >= amount) {
                 // fully return collateral
@@ -155,10 +155,11 @@ contract LendingService {
     function _withdrawUsdc(address user, uint256 amount) internal {
         DepositInfo storage d = usdcDepositInfos[user];
         if (d.amount > 0) {
-            uint256 paybackAmount = calcPrincipleSum(d.amount, d.timestamp);
+            uint256 paybackAmount = calcPrincipleSum(d.amount, block.timestamp - d.timestamp + d.timeRemainder);
             require(amount <= paybackAmount, "withdraw: excessive withdrawl");
             usdc.transfer(user, amount);
             d.timestamp = block.timestamp;
+            d.timeRemainder = (block.timestamp - d.timestamp) % 1 days;
             d.amount = paybackAmount - amount;
         }
     }
@@ -166,9 +167,10 @@ contract LendingService {
     function _withdrawEth(address user, uint256 amount) internal {
         DepositInfo storage d = ethDepositInfos[user];
         if (d.amount > 0) {
-            uint256 paybackAmount = calcPrincipleSum(d.amount, d.timestamp);
+            uint256 paybackAmount = calcPrincipleSum(d.amount, block.timestamp - d.timestamp);
             require(amount <= paybackAmount, "withdraw: excessive withdrawl");
             d.timestamp = block.timestamp;
+            d.timeRemainder = (block.timestamp - d.timestamp) % 1 days;
             d.amount = paybackAmount - amount;
             payable(user).transfer(amount);
         }
