@@ -56,12 +56,13 @@ contract LendingService {
         DepositInfo storage d = usdcDepositInfos[provider];
         if (d.amount > 0) {
             d.amount = calcPrincipleSum(d.amount, d.timestamp + d.timeRemainder) + amount;
-            d.timeRemainder = (d.timestamp - block.timestamp) % 1 days;
+            d.timeRemainder = (block.timestamp - d.timestamp) % 1 days;
             d.timestamp = block.timestamp;
         }
         else {
             d.amount = amount;
             d.timestamp = block.timestamp;
+            d.timeRemainder = 0;
         }
     }
 
@@ -69,12 +70,13 @@ contract LendingService {
         DepositInfo storage d = ethDepositInfos[provider];
         if (d.amount > 0) {
             d.amount = calcPrincipleSum(d.amount, d.timestamp + d.timeRemainder) + amount;
-            d.timeRemainder = (d.timestamp - block.timestamp) % 1 days;
+            d.timeRemainder = (block.timestamp - d.timestamp) % 1 days;
             d.timestamp = block.timestamp;
         }
         else {
             d.amount = amount;
             d.timestamp = block.timestamp;
+            d.timeRemainder = 0;
         }
     }
 
@@ -117,10 +119,11 @@ contract LendingService {
             if (paybackAmount >= amount) {
                 // fully return collateral
                 payable(msg.sender).transfer(b.collateralAmount);
+                b.timeRemainder = 0;
             }
             else {
                 // partially return collateral
-                b.timeRemainder = (b.timestamp - block.timestamp) % 1 days;
+                b.timeRemainder = (block.timestamp - b.timestamp) % 1 days;
                 b.timestamp = block.timestamp;
                 b.amount = paybackAmount - amount;
                 payable(msg.sender).transfer(b.collateralAmount * amount / paybackAmount);
