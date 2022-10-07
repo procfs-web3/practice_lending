@@ -8,19 +8,16 @@ contract LendingService {
 
     IDreamOracle priceOracle;
     IERC20 usdc;
-    DepositInfo[] usdcDepositInfos;
-    DepositInfo[] ethDepositInfos;
-    BorrowInfo[] borrowInfos;
+    mapping (address => DepositInfo) usdcDepositInfos;
+    mapping (address => DepositInfo) ethDepositInfos;
+    mapping (address => BorrowInfo) usdcBorrows;
 
     struct DepositInfo {
-        address provider;
         uint256 amount;
         uint256 timestamp;
-        bool isUsdc;
     }
 
     struct BorrowInfo {
-        address borrower;
         uint256 amount;
         uint256 collateralAmount;
         uint256 liquidationThresh;
@@ -53,166 +50,120 @@ contract LendingService {
         return balance;
     }
 
-    function _depositUsdc(uint256 amount) internal {
-        for (uint i = 0; i < usdcDepositInfos.length; i++) {
-            if (usdcDepositInfos[i].provider == msg.sender) {
-                DepositInfo storage d = usdcDepositInfos[i];
-                d.amount = calcPrincipleSum(amount, d.timestamp) + amount;
-                d.timestamp = block.timestamp;
-                usdc.transferFrom(msg.sender, address(this), amount);
-                return;
-            }
+    function _depositUsdc(address provider, uint256 amount) internal {
+        DepositInfo storage d = usdcDepositInfos[provider];
+        if (d.amount > 0) {
+            d.amount = calcPrincipleSum(d.amount, d.timestamp) + amount;
+            d.timestamp = block.timestamp;
         }
-        DepositInfo memory d;
-        d.provider = msg.sender;
-        d.amount = amount;
-        d.timestamp = block.timestamp;
-        usdcDepositInfos.push(d);
-        usdc.transferFrom(msg.sender, address(this), amount);
+        else {
+            d.amount = amount;
+            d.timestamp = block.timestamp;
+        }
     }
 
-    function _depositEth(uint256 amount) internal {
-        for (uint i = 0; i < ethDepositInfos.length; i++) {
-            if (ethDepositInfos[i].provider == msg.sender) {
-                DepositInfo storage d = ethDepositInfos[i];
-                d.amount = calcPrincipleSum(amount, d.timestamp) + amount;
-                d.timestamp = block.timestamp;
-                return;
-            }
+    function _depositEth(address provider, uint256 amount) internal {
+        DepositInfo storage d = ethDepositInfos[provider];
+        if (d.amount > 0) {
+            d.amount = calcPrincipleSum(d.amount, d.timestamp) + amount;
+            d.timestamp = block.timestamp;
         }
-        DepositInfo memory d;
-        d.provider = msg.sender;
-        d.amount = amount;
-        d.timestamp = block.timestamp;
-        ethDepositInfos.push(d);
+        else {
+            d.amount = amount;
+            d.timestamp = block.timestamp;
+        }
     }
 
    function deposit(address tokenAddress, uint256 amount) public payable {
         require((amount > 0 && msg.value == 0) || (amount == 0 && msg.value > 0), "deposit: amount must be nonzero and only one type of asset can be deposited");
         if (amount == 0) {
-            _depositEth(msg.value);
+            _depositEth(msg.sender, msg.value);
         }
         else {
             require(tokenAddress == address(usdc), "deposit: tokenAddress is not USDC");
-            _depositUsdc(amount);
+            usdc.transferFrom(msg.sender, address(this), amount);
+            _depositUsdc(msg.sender, amount);
         }
    }
 
     function borrow(address tokenAddress, uint256 amount) public {
         require(tokenAddress == address(usdc), "borrow: tokenAddress is not USDC");
         require(amount > 0, "borrow: amount must be nonzero");
-        for (uint i = 0; i < borrowInfos.length; i++) {
-            require(borrowInfos[i].borrower != msg.sender, "borrow: double borrow");
+        if (usdcBorrows[msg.sender].amount > 0) {
+            revert("double borrow");
         }
-        BorrowInfo memory b;
-        b.borrower = msg.sender;
+        BorrowInfo storage b = usdcBorrows[msg.sender];
         b.collateralAmount = usdcToEth(amount * 10 / 5);
-        for (uint i = 0; i < ethDepositInfos.length; i++) {
-            if (ethDepositInfos[i].provider == msg.sender) {
-                require(ethDepositInfos[i].amount >= b.collateralAmount, "borrow: not enough collateral");
-                ethDepositInfos[i].amount -= b.collateralAmount;
-            }
-        }
+        require(ethDepositInfos[msg.sender].amount >= b.collateralAmount, "borrow: not enough collateral");
+        ethDepositInfos[msg.sender].amount -= b.collateralAmount;
         b.amount = amount;
-        b.liquidationThresh = usdcToEth(amount) * 75 / 100;
+        // Liquidation thresh is (value of collateral in USDC) such that liquidation occurs. It is 4/3 of the current value of the loan
+        b.liquidationThresh = amount * 100 / 75;
         b.timestamp = block.timestamp;
-        borrowInfos.push(b);
         usdc.transfer(msg.sender, amount);
     }
 
     function repay(address tokenAddress, uint256 amount) public {
         require(tokenAddress == address(usdc), "repay: tokenAddress is not USDC");
         require(amount > 0, "repay: amount must be nonzero");
-        for (uint i = 0; i < borrowInfos.length; i++) {
-            BorrowInfo storage b = borrowInfos[i];
-            if (b.borrower == msg.sender) {
-                uint256 paybackAmount = calcPrincipleSum(b.amount, b.timestamp);
-                require(amount <= paybackAmount, "repay: excessive repayment");
-                usdc.transferFrom(b.borrower, address(this), amount);
-                if (paybackAmount == amount) {
-                    // return collateral
-                    payable(b.borrower).transfer(b.collateralAmount);
-                    borrowInfos[i] = borrowInfos[borrowInfos.length - 1];
-                    borrowInfos.pop();
-                }
-                else {
-                    b.timestamp = block.timestamp;
-                    b.amount = paybackAmount - amount;
-                }
-                return;
+        BorrowInfo storage b = usdcBorrows[msg.sender];
+        if (b.amount > 0) {
+            uint256 paybackAmount = calcPrincipleSum(b.amount, b.timestamp);
+            usdc.transferFrom(msg.sender, address(this), amount);
+            if (paybackAmount >= amount) {
+                // fully return collateral
+                payable(msg.sender).transfer(b.collateralAmount);
+            }
+            else {
+                // partially return collateral
+                b.timestamp = block.timestamp;
+                b.amount = paybackAmount - amount;
+                payable(msg.sender).transfer(b.collateralAmount * amount / paybackAmount);
             }
         }
-        require(false, "repay: user not found");
     }
 
     function liquidate(address user, address tokenAddress, uint256 amount) public {
         require(tokenAddress == address(usdc), "liquidate: tokenAddress is not USDC");
         require(amount > 0, "liquidate: liquidation amount must be nonzero");
-        for (uint i = 0; i < borrowInfos.length; i++) {
-            BorrowInfo storage b = borrowInfos[i];
-            if (b.borrower == user) {
-                uint usdcAmount = ethToUsdc(b.collateralAmount);
-                if (usdcAmount <= b.liquidationThresh) {
-                    require(amount <= b.collateralAmount, "liquidate: liquidation amount exceeds collateral amount");
-                    if (amount == b.collateralAmount) {
-                        payable(msg.sender).transfer(amount);
-                        usdc.transferFrom(msg.sender, address(this), usdcAmount);
-                        borrowInfos[i] = borrowInfos[borrowInfos.length - 1];
-                        borrowInfos.pop();
-                    }
-                    else {
-                        usdcAmount = usdcAmount * amount / b.collateralAmount;
-                        b.collateralAmount -= amount;
-                        payable(msg.sender).transfer(amount);
-                        usdc.transferFrom(msg.sender, address(this), usdcAmount);
-                    }
+        BorrowInfo storage b = usdcBorrows[user];
+        if (b.amount > 0) {
+            uint usdcAmount = ethToUsdc(b.collateralAmount);
+            if (usdcAmount <= b.liquidationThresh) {
+                require(amount <= b.collateralAmount, "liquidate: liquidation amount exceeds collateral amount");
+                if (amount == b.collateralAmount) {
+                    usdc.transferFrom(msg.sender, address(this), usdcAmount);
                 }
-                return;
+                else {
+                    usdcAmount = usdcAmount * amount / b.collateralAmount;
+                    b.collateralAmount -= amount;
+                    usdc.transferFrom(msg.sender, address(this), usdcAmount);
+                }
+                payable(msg.sender).transfer(amount);
             }
         }
-        require(false, "liquidate: user not found");
     }
 
     function _withdrawUsdc(address user, uint256 amount) internal {
-        for (uint i = 0; i < usdcDepositInfos.length; i++) {
-            DepositInfo storage d = usdcDepositInfos[i];
-            if (d.provider == user) {
-                uint256 paybackAmount = calcPrincipleSum(d.amount, d.timestamp);
-                require(amount <= paybackAmount, "withdraw: excessive withdrawl");
-                usdc.transfer(d.provider, amount);
-                if (paybackAmount == amount) {
-                    usdcDepositInfos[i] = usdcDepositInfos[usdcDepositInfos.length - 1];
-                    usdcDepositInfos.pop();
-                }
-                else {
-                    d.timestamp = block.timestamp;
-                    d.amount = paybackAmount - amount;
-                }
-                return;
-            }
+        DepositInfo storage d = usdcDepositInfos[user];
+        if (d.amount > 0) {
+            uint256 paybackAmount = calcPrincipleSum(d.amount, d.timestamp);
+            require(amount <= paybackAmount, "withdraw: excessive withdrawl");
+            usdc.transfer(user, amount);
+            d.timestamp = block.timestamp;
+            d.amount = paybackAmount - amount;
         }
-        require(false, "withdraw: user not found");
     }
 
     function _withdrawEth(address user, uint256 amount) internal {
-        for (uint i = 0; i < ethDepositInfos.length; i++) {
-            DepositInfo storage d = ethDepositInfos[i];
-            if (d.provider == user) {
-                uint256 paybackAmount = calcPrincipleSum(d.amount, d.timestamp);
-                require(amount <= paybackAmount, "withdraw: excessive withdrawl");
-                payable(d.provider).transfer(amount);
-                if (paybackAmount == amount) {
-                    ethDepositInfos[i] = ethDepositInfos[ethDepositInfos.length - 1];
-                    ethDepositInfos.pop();
-                }
-                else {
-                    d.timestamp = block.timestamp;
-                    d.amount = paybackAmount - amount;
-                }
-                return;
-            }
+        DepositInfo storage d = ethDepositInfos[user];
+        if (d.amount > 0) {
+            uint256 paybackAmount = calcPrincipleSum(d.amount, d.timestamp);
+            require(amount <= paybackAmount, "withdraw: excessive withdrawl");
+            d.timestamp = block.timestamp;
+            d.amount = paybackAmount - amount;
+            payable(user).transfer(amount);
         }
-        require(false, "withdraw: user not found");
     }
 
     function withdraw(address tokenAddress, uint256 amount) public {
