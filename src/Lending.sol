@@ -191,9 +191,11 @@ contract DreamAcademyLending {
         require(tokenAddress == address(usdc), "liquidate: tokenAddress is not USDC");
         require(amount > 0, "liquidate: liquidation amount must be nonzero");
         BorrowInfo storage b = usdcBorrows[user];
+        DepositInfo memory d = ethDepositInfos[user];
         if (b.amount > 0) {
-            uint usdcAmount = ethValue(b.collateralAmount) / usdcValue(1);
+            uint usdcAmount = ethValue(b.collateralAmount + d.amount) / usdcValue(1);
             require (usdcAmount <= b.liquidationThresh);
+            console.log("%d %d", b.liquidationThresh / 1 ether, usdcAmount / 1 ether);
             require(amount <= usdcAmount, "liquidate: liquidation amount exceeds collateral amount");
             if (amount == usdcAmount) {
                 usdc.transferFrom(msg.sender, address(this), usdcAmount);
