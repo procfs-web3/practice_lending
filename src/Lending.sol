@@ -4,9 +4,9 @@ pragma solidity ^0.8.13;
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "src/DreamOracle.sol";
 
-contract LendingService {
+contract DreamAcademyLending {
 
-    IDreamOracle priceOracle;
+    IPriceOracle priceOracle;
     IERC20 usdc;
     mapping (address => DepositInfo) usdcDepositInfos;
     mapping (address => DepositInfo) ethDepositInfos;
@@ -26,9 +26,17 @@ contract LendingService {
         uint256 timeRemainder;
     }
 
-    constructor(address usdcAddress, address oracleAddress) {
-        priceOracle = IDreamOracle(oracleAddress);
-        usdc = IERC20(usdcAddress);
+    constructor(IPriceOracle _priceOracle, address _usdc) {
+        priceOracle = _priceOracle;
+        usdc = IERC20(_usdc);
+    }
+
+    function initializeLendingProtocol(address _usdc) public payable {
+        usdc = IERC20(_usdc);
+    }
+
+    function getAccruedSupplyAmount(address _usdc) public view returns (uint256) {
+        return 0;
     }
 
     function ethToUsdc(uint256 ethAmount) internal view returns (uint256) {
