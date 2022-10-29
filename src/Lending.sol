@@ -9,12 +9,16 @@ contract DreamAcademyLending {
 
     IPriceOracle priceOracle;
     IERC20 usdc;
+    uint256 totalUsdcLoanWiInterest;
+    uint256 totalUsdcLoanWoInterest;
+    uint256 usdcLoanTs;
     uint256 totalUsdcDeposits;
+    uint256 usdcDepositTs;
     uint256 totalEthDeposits;
     mapping (address => DepositInfo) usdcDepositInfos;
     mapping (address => DepositInfo) ethDepositInfos;
     mapping (address => BorrowInfo) usdcBorrows;
-    address[] usdcBorrowers;
+
 
     struct DepositInfo {
         uint256 amount;
@@ -23,9 +27,8 @@ contract DreamAcademyLending {
     }
 
     struct BorrowInfo {
-        uint256 amount;
+        uint256 loanAmount;
         uint256 collateralAmount;
-        uint256 liquidationThresh;
         uint256 timestamp;
         uint256 timeRemainder;
     }
@@ -33,7 +36,11 @@ contract DreamAcademyLending {
     constructor(IPriceOracle _priceOracle, address _usdc) {
         priceOracle = _priceOracle;
         usdc = IERC20(_usdc);
+        totalUsdcLoanWiInterest = 0;
+        totalUsdcLoanWoInterest = 0;
+        usdcLoanTs = 0;
         totalUsdcDeposits = 0;
+        usdcDepositTs = 0;
         totalEthDeposits = 0;
     }
 
@@ -43,15 +50,14 @@ contract DreamAcademyLending {
     }
 
     function getAccruedSupplyAmountInner(address _usdc, address owner) internal view returns (uint256) {
-        uint256 totalAccrued = 0;
-        
         if (_usdc == address(usdc)) {
-            for (uint i = 0; i < usdcBorrowers.length; i++) {
-                BorrowInfo memory b = usdcBorrows[usdcBorrowers[i]];
-                totalAccrued += calcPrincipleSum(b.amount, block.number * 12 - b.timestamp + b.timeRemainder) - b.amount;
-            }
+            uint256 totalAccrued = calcPrincipleSum(totalUsdcLoanWiInterest, block.number * 12 - usdcLoanTs) - totalUsdcLoanWoInterest;
             DepositInfo memory d = usdcDepositInfos[owner];
-            return d.amount + totalAccrued * d.amount / totalUsdcDeposits;
+            // amount of USDC that should be 'held' by owner ideally
+            uint256 ownerUsdc = calcPrincipleSum(d.amount, block.number * 12 - d.timestamp + d.timeRemainder);
+            // amount of USDC that everyone should 'hold' ideally
+            uint256 totalUsdc = calcPrincipleSum(totalUsdcDeposits, block.number * 12 - usdcDepositTs);
+            return d.amount + totalAccrued * ownerUsdc / totalUsdc;
         }
         else {
             require(_usdc == address(0));
@@ -97,7 +103,16 @@ contract DreamAcademyLending {
             d.timestamp = block.number * 12;
             d.timeRemainder = 0;
         }
-        totalUsdcDeposits += amount;
+        if (usdcDepositTs == 0) {
+            totalUsdcDeposits = amount;
+            usdcDepositTs = block.number * 12;
+        }
+        else {
+            uint256 before = totalUsdcDeposits;
+            uint256 updated = calcPrincipleSum(before, block.number * 12 - usdcDepositTs);
+            totalUsdcDeposits = updated + amount;
+            usdcDepositTs = block.number * 12;
+        }
     }
 
     function _depositEth(address provider, uint256 amount) internal {
@@ -112,6 +127,7 @@ contract DreamAcademyLending {
             d.timestamp = block.number * 12;
             d.timeRemainder = 0;
         }
+        // for ETH, we do not consider interest rates because we cannot borrow ETH, and thus share calcalation is unnecessary
         totalEthDeposits += amount;
     }
 
@@ -130,15 +146,13 @@ contract DreamAcademyLending {
     function borrow(address tokenAddress, uint256 amount) public {
         require(tokenAddress == address(usdc), "borrow: tokenAddress is not USDC");
         require(amount > 0, "borrow: amount must be nonzero");
-        if (usdcBorrows[msg.sender].amount > 0) {
+        if (usdcBorrows[msg.sender].loanAmount > 0) {
             BorrowInfo storage b = usdcBorrows[msg.sender];
             uint additionalCollateralAmount = usdcValue(amount * 10 / 5) / ethValue(1);
             require(ethDepositInfos[msg.sender].amount >= additionalCollateralAmount, "borrow: not enough collateral");
             b.collateralAmount += additionalCollateralAmount;
             ethDepositInfos[msg.sender].amount -= additionalCollateralAmount;
-            b.amount += amount;
-            // Liquidation thresh is (value of collateral in USDC) such that liquidation occurs. It is 4/3 of the current value of the loan
-            b.liquidationThresh = b.amount * 100 / 75;
+            b.loanAmount += amount;
             b.timestamp = block.number * 12;
             usdc.transfer(msg.sender, amount);
         }
@@ -147,20 +161,19 @@ contract DreamAcademyLending {
             b.collateralAmount = usdcValue(amount * 10 / 5) / ethValue(1);
             require(ethDepositInfos[msg.sender].amount >= b.collateralAmount, "borrow: not enough collateral");
             ethDepositInfos[msg.sender].amount -= b.collateralAmount;
-            b.amount = amount;
-            b.liquidationThresh = amount * 100 / 75;
+            b.loanAmount = amount;
             b.timestamp = block.number * 12;
             usdc.transfer(msg.sender, amount);
         }
-        bool found = false;
-        for (uint i = 0; i < usdcBorrowers.length; i++) {
-            if (usdcBorrowers[i] == msg.sender) {
-                found = true;
-                break;
-            }
+        if (usdcLoanTs == 0) {
+            totalUsdcLoanWiInterest = amount;
+            totalUsdcLoanWoInterest = amount;
+            usdcLoanTs = block.number * 12;
         }
-        if (!found) {
-            usdcBorrowers.push(msg.sender);
+        else {
+            totalUsdcLoanWiInterest = calcPrincipleSum(totalUsdcLoanWiInterest, block.number * 12 - usdcLoanTs) + amount;
+            totalUsdcLoanWoInterest += amount;
+            usdcLoanTs = block.number * 12;
         }
     }
 
@@ -168,10 +181,10 @@ contract DreamAcademyLending {
         require(tokenAddress == address(usdc), "repay: tokenAddress is not USDC");
         require(amount > 0, "repay: amount must be nonzero");
         BorrowInfo storage b = usdcBorrows[msg.sender];
-        if (b.amount > 0) {
-            uint256 paybackAmount = calcPrincipleSum(b.amount, block.number * 12 - b.timestamp + b.timeRemainder);
+        if (b.loanAmount > 0) {
+            uint256 repayAmount = calcPrincipleSum(b.loanAmount, block.number * 12 - b.timestamp + b.timeRemainder);
             usdc.transferFrom(msg.sender, address(this), amount);
-            if (amount >= paybackAmount) {
+            if (amount >= repayAmount) {
                 // fully return collateral
                 ethDepositInfos[msg.sender].amount += b.collateralAmount;
                 b.timeRemainder = 0;
@@ -180,9 +193,8 @@ contract DreamAcademyLending {
                 // partially return collateral
                 b.timeRemainder = (block.number * 12 - b.timestamp) % 1 days;
                 b.timestamp = block.number * 12;
-                b.amount = paybackAmount - amount;
-                console.log("fucking: %d %d", b.collateralAmount * amount / paybackAmount, paybackAmount);
-                ethDepositInfos[msg.sender].amount += b.collateralAmount * amount / paybackAmount;
+                b.loanAmount = repayAmount - amount;
+                ethDepositInfos[msg.sender].amount += b.collateralAmount * amount / repayAmount;
             }
         }
     }
@@ -192,33 +204,38 @@ contract DreamAcademyLending {
         require(amount > 0, "liquidate: liquidation amount must be nonzero");
         BorrowInfo storage b = usdcBorrows[user];
         DepositInfo memory d = ethDepositInfos[user];
-        if (b.amount > 0) {
-            uint usdcAmount = ethValue(b.collateralAmount + d.amount) / usdcValue(1);
-            require (usdcAmount <= b.liquidationThresh);
-            console.log("%d %d", b.liquidationThresh / 1 ether, usdcAmount / 1 ether);
-            require(amount <= usdcAmount, "liquidate: liquidation amount exceeds collateral amount");
-            if (amount == usdcAmount) {
-                usdc.transferFrom(msg.sender, address(this), usdcAmount);
-            }
-            else {
-                b.collateralAmount -= usdcValue(amount) / ethValue(1);
-                b.liquidationThresh = (b.amount - amount) * 100 / 75;
-                usdc.transferFrom(msg.sender, address(this), amount);
-            }
-            uint256 ethAmount = amount / usdcAmount * b.collateralAmount;
-            payable(msg.sender).transfer(ethAmount);
+        require(b.loanAmount > 0);
+        uint256 collateralValueUsdc = ethValue(b.collateralAmount + d.amount) / usdcValue(1);
+        uint256 realLoanAmount = calcPrincipleSum(b.loanAmount, block.number * 12 - b.timestamp + b.timeRemainder);
+        require (collateralValueUsdc <= realLoanAmount * 100 / 75, "liquidation threshold not reached");
+        if (b.loanAmount <= 100 ether) {
+            require(amount <= realLoanAmount, "liquidate: liquidation amount exceeds collateral amount");
         }
+        else {
+            require(amount * 4 <= realLoanAmount, "liquidate: liquidation amount exceeds collateral amount");
+        }
+        if (amount == collateralValueUsdc) {
+            b.loanAmount = 0;
+            usdc.transferFrom(msg.sender, address(this), amount);
+        }
+        else {
+            b.loanAmount -= amount;
+            b.collateralAmount -= usdcValue(amount) / ethValue(1);
+            usdc.transferFrom(msg.sender, address(this), amount);
+        }
+        uint256 ethAmount = amount / collateralValueUsdc * b.collateralAmount;
+        payable(msg.sender).transfer(ethAmount);
     }
 
     function _withdrawUsdc(address user, uint256 amount) internal {
         DepositInfo storage d = usdcDepositInfos[user];
         if (d.amount > 0) {
-            uint256 paybackAmount = getAccruedSupplyAmountInner(address(usdc), msg.sender);
-            require(amount <= paybackAmount, "withdraw: excessive withdrawl");
+            uint256 balance = getAccruedSupplyAmountInner(address(usdc), msg.sender);
+            require(amount <= balance, "withdraw: excessive withdrawl");
             usdc.transfer(user, amount);
             d.timestamp = block.number * 12;
             d.timeRemainder = (block.number * 12 - d.timestamp) % 1 days;
-            d.amount = paybackAmount - amount;
+            d.amount = balance - amount;
             totalUsdcDeposits -= amount;
         }
     }
@@ -226,12 +243,17 @@ contract DreamAcademyLending {
     function _withdrawEth(address user, uint256 amount) internal {
         DepositInfo storage d = ethDepositInfos[user];
         BorrowInfo storage b = usdcBorrows[user];
+        // ETH can be 'locked', consider this into account
         require(d.amount > 0 || b.collateralAmount > 0);
-        uint256 paybackAmount = d.amount + b.collateralAmount - usdcValue(b.liquidationThresh) / ethValue(1);
-        require(amount <= paybackAmount, "withdraw: excessive withdrawl");
+        uint256 realLoanAmount = calcPrincipleSum(b.loanAmount, block.number * 12 - b.timestamp + b.timeRemainder);
+        // this is the value of the collateral, in USDC such that liquidation occurs
+        uint256 liquidationThresh = realLoanAmount * 100 / 75;
+        // ETH with amounts which have equivalent value to liquidationThresh must remain
+        uint256 balance = d.amount + b.collateralAmount - usdcValue(liquidationThresh) / ethValue(1);
+        require(amount <= balance, "withdraw: excessive withdrawl");
         d.timestamp = block.number * 12;
         d.timeRemainder = (block.number * 12 - d.timestamp) % 1 days;
-        d.amount = paybackAmount - amount;
+        d.amount = balance - amount;
         totalEthDeposits -= amount;
         payable(user).transfer(amount);
     }
